@@ -24,6 +24,7 @@ thereby shutting down the TCP connection.
   tcp_kill("10.31.33.7", 50246 "93.184.216.34", 443)
 
 Dependencies:
+  lsof (https://en.wikipedia.org/wiki/Lsof)
   frida (https://www.frida.re/): sudo pip install frida
 """
 
