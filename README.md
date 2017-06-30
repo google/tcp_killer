@@ -44,6 +44,15 @@ TCP connection was successfully shutdown.
 ```
 
 ## Dependencies
+
+### lsof
+
+This program uses [lsof](https://en.wikipedia.org/wiki/Lsof) to find the process and socket file descriptor associated with a given TCP connection.
+
+lsof can be installed via your package management system (for example, `sudo apt-get install lsof`).
+
+### frida
+
 This program uses the [frida](https://www.frida.re/) framework to perform code injection.
 
 Frida can be installed as follows: `sudo pip install frida`
