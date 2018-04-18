@@ -47,6 +47,7 @@ _FRIDA_SCRIPT = """
   var resolver = new ApiResolver("module");
   var lib = Process.platform == "darwin" ? "libsystem" : "libc";
   var matches = resolver.enumerateMatchesSync("exports:*" + lib + "*!shutdown");
+
   if (matches.length == 0)
   {
     throw new Error("Could not find *" + lib + "*!shutdown in target process.");
@@ -78,10 +79,15 @@ _FRIDA_SCRIPT = """
       throw new Error("More than one match found for *libc*!shutdown: " + s);
     }
   }
+  var fd = %d;
   var shutdown = new NativeFunction(matches[0].address, "int", ["int", "int"]);
-  if (shutdown(%d, 0) != 0)
+
+  console.log('calling shutdown(' + fd + ', 0)')
+
+  var err = shutdown(fd, 0)
+  if (err != 0)
   {
-    throw new Error("Call to shutdown() returned an error.");
+    throw new Error("Call to shutdown() returned an error: " + err);
   }
   send("");
   """
@@ -133,7 +139,7 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
 
   name_pattern = re.compile(
       r"^\[?(.+?)]?:([0-9]{1,5})->\[?(.+?)]?:([0-9]{1,5})$")
-  fd_pattern = re.compile(r"^(\d)+")
+  fd_pattern = re.compile(r"^(\d+)")
 
   field_names = ("PID", "FD", "NAME")
   fields = {}
@@ -141,10 +147,11 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
   sockfd = None
   for line in subprocess.check_output("lsof -bnlPiTCP -sTCP:ESTABLISHED "
                                       "2>/dev/null", shell=True).splitlines():
+    line = str(line, 'ascii')
     words = line.split()
 
     if len(fields) != len(field_names):
-      for i in xrange(len(words)):
+      for i in range(len(words)):
         for field in field_names:
           if words[i] == field:
             fields[field] = i
@@ -162,8 +169,8 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
       pid = int(words[fields["PID"]])
       sockfd = int(fd_pattern.match(words[fields["FD"]]).group(1))
       if verbose:
-        print "Process ID of socket's process: %d" % pid
-        print "Socket file descriptor: %d" % sockfd
+        print ("Process ID of socket's process: %d" % pid)
+        print ("Socket file descriptor: %d" % sockfd)
       break
 
   if not sockfd:
@@ -221,12 +228,12 @@ if __name__ == "__main__":
   class ArgParser(argparse.ArgumentParser):
 
     def error(self, message):
-      print "tcp_killer v" + __version__
-      print "by " + __author__
-      print
-      print "Error: " + message
-      print
-      print self.format_help().replace("usage:", "Usage:")
+      print ("tcp_killer v" + __version__)
+      print ("by " + __author__)
+      print()
+      print ("Error: " + message)
+      print()
+      print (self.format_help().replace("usage:", "Usage:"))
       self.exit(0)
 
   parser = ArgParser(
@@ -268,4 +275,4 @@ Examples:
   tcp_kill(local_address, int(local.group(2)), remote_address,
            int(remote.group(2)), parsed.verbose)
 
-  print "TCP connection was successfully shutdown."
+  print ("TCP connection was successfully shutdown.")
