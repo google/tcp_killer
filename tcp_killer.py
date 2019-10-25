@@ -42,49 +42,55 @@ import threading
 
 import frida
 
-
-_FRIDA_SCRIPT = """
+def frida_script(command):
+  return """
   var resolver = new ApiResolver("module");
   var lib = Process.platform == "darwin" ? "libsystem" : "libc";
-  var matches = resolver.enumerateMatchesSync("exports:*" + lib + "*!shutdown");
+  var matches = resolver.enumerateMatchesSync("exports:*" + lib + "*!{command}");
+
   if (matches.length == 0)
-  {
-    throw new Error("Could not find *" + lib + "*!shutdown in target process.");
-  }
+  {{
+    throw new Error("Could not find *" + lib + "*!{command} in target process.");
+  }}
   else if (matches.length != 1)
-  {
+  {{
     // Sometimes Frida returns duplicates.
     var address = 0;
     var s = "";
     var duplicates_only = true;
     for (var i = 0; i < matches.length; i++)
-    {
+    {{
       if (s.length != 0)
-      {
+      {{
         s += ", ";
-      }
+      }}
       s += matches[i].name + "@" + matches[i].address;
       if (address == 0)
-      {
+      {{
         address = matches[i].address;
-      }
+      }}
       else if (!address.equals(matches[i].address))
-      {
+      {{
         duplicates_only = false;
-      }
-    }
+      }}
+    }}
     if (!duplicates_only)
-    {
-      throw new Error("More than one match found for *libc*!shutdown: " + s);
-    }
-  }
-  var shutdown = new NativeFunction(matches[0].address, "int", ["int", "int"]);
-  if (shutdown(%d, 0) != 0)
-  {
-    throw new Error("Call to shutdown() returned an error.");
-  }
+    {{
+      throw new Error("More than one match found for *libc*!{command}: " + s);
+    }}
+  }}
+  var fd = %d;
+  var command = new NativeFunction(matches[0].address, "int", ["int", "int"]);
+
+  console.log('calling {command}(' + fd + ', 0)')
+
+  var err = command(fd, 0)
+  if (err != 0)
+  {{
+    throw new Error("Call to {command}() returned an error: " + err);
+  }}
   send("");
-  """
+  """.format(command=command)
 
 
 def canonicalize_ip_address(address):
@@ -95,7 +101,7 @@ def canonicalize_ip_address(address):
   return socket.inet_ntop(family, socket.inet_pton(family, address))
 
 
-def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
+def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False, force=False):
   """Shuts down a TCP connection on Linux or macOS.
 
   Finds the process and socket file descriptor associated with a given TCP
@@ -113,6 +119,7 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
     remote_port: The port (as an int) associated with the remote endpoint of the
       connection.
     verbose: If True, print verbose output to the console.
+    force: If True, ungracefully call close() instead of shutdown()
 
   Returns:
     No return value if successful. If unsuccessful, raises an exception.
@@ -133,7 +140,7 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
 
   name_pattern = re.compile(
       r"^\[?(.+?)]?:([0-9]{1,5})->\[?(.+?)]?:([0-9]{1,5})$")
-  fd_pattern = re.compile(r"^(\d)+")
+  fd_pattern = re.compile(r"^(\d+)")
 
   field_names = ("PID", "FD", "NAME")
   fields = {}
@@ -141,10 +148,11 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
   sockfd = None
   for line in subprocess.check_output("lsof -bnlPiTCP -sTCP:ESTABLISHED "
                                       "2>/dev/null", shell=True).splitlines():
+    line = str(line, 'ascii')
     words = line.split()
 
     if len(fields) != len(field_names):
-      for i in xrange(len(words)):
+      for i in range(len(words)):
         for field in field_names:
           if words[i] == field:
             fields[field] = i
@@ -162,18 +170,18 @@ def tcp_kill(local_addr, local_port, remote_addr, remote_port, verbose=False):
       pid = int(words[fields["PID"]])
       sockfd = int(fd_pattern.match(words[fields["FD"]]).group(1))
       if verbose:
-        print "Process ID of socket's process: %d" % pid
-        print "Socket file descriptor: %d" % sockfd
+        print ("Process ID of socket's process: %d" % pid)
+        print ("Socket file descriptor: %d" % sockfd)
       break
 
   if not sockfd:
     s = " Try running as root." if os.geteuid() != 0 else ""
     raise OSError("Socket not found for connection." + s)
 
-  _shutdown_sockfd(pid, sockfd)
+  _shutdown_sockfd(pid, sockfd, "close" if force else "shutdown")
 
 
-def _shutdown_sockfd(pid, sockfd):
+def _shutdown_sockfd(pid, sockfd, command):
   """Injects into a process a call to shutdown() a socket file descriptor.
 
   Injects into a process a call to shutdown()
@@ -198,7 +206,7 @@ def _shutdown_sockfd(pid, sockfd):
     event.set()
 
   session = frida.attach(pid)
-  script = session.create_script(_FRIDA_SCRIPT % sockfd)
+  script = session.create_script(frida_script(command) % sockfd)
   script.on("message", on_message)
   closed = False
 
@@ -221,12 +229,12 @@ if __name__ == "__main__":
   class ArgParser(argparse.ArgumentParser):
 
     def error(self, message):
-      print "tcp_killer v" + __version__
-      print "by " + __author__
-      print
-      print "Error: " + message
-      print
-      print self.format_help().replace("usage:", "Usage:")
+      print ("tcp_killer v" + __version__)
+      print ("by " + __author__)
+      print()
+      print ("Error: " + message)
+      print()
+      print (self.format_help().replace("usage:", "Usage:"))
       self.exit(0)
 
   parser = ArgParser(
@@ -240,11 +248,14 @@ Examples:
   %(prog)s 10.31.33.7:50246 93.184.216.34:443
   %(prog)s 2001:db8:85a3::8a2e:370:7334.93 2606:2800:220:1:248:1893:25c8:1946.80
   %(prog)s -verbose [2001:4860:4860::8888]:46820 [2607:f8b0:4005:807::200e]:80
+  %(prog)s -verbose -force [2001:4860:4860::8888]:46820 [2607:f8b0:4005:807::200e]:80
 """)
 
   args = parser.add_argument_group("Arguments")
   args.add_argument("-verbose", required=False, action="store_const",
                     const=True, help="Show verbose output")
+  args.add_argument("-force", required=False, action="store_const",
+                    const=True, help="Use close() instead of shutdown()")
   args.add_argument("local", metavar="<local endpoint>",
                     help="Connection's local IP address and port")
   args.add_argument("remote", metavar="<remote endpoint>",
@@ -266,6 +277,6 @@ Examples:
     remote_address = remote_address[1:-1]
 
   tcp_kill(local_address, int(local.group(2)), remote_address,
-           int(remote.group(2)), parsed.verbose)
+           int(remote.group(2)), parsed.verbose, parsed.force)
 
-  print "TCP connection was successfully shutdown."
+  print ("TCP connection was successfully shutdown.")
